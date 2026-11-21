@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Keyplus Destek bağlantı K simgesi">
+  <rect width="256" height="256" rx="58" fill="#df192a"/>
+  <path d="M76 62v132m101-132-80 66 80 66" fill="none" stroke="#fff" stroke-width="23" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="177" cy="62" r="17" fill="#fff"/>
+  <circle cx="177" cy="194" r="17" fill="#fff"/>
+</svg>

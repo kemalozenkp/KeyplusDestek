@@ -1,0 +1,5 @@
+work/
+dist/
+config/local.json
+config/pilot.json
+*.log

@@ -1,0 +1,203 @@
+name: Keyplus Destek Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keyplus-destek-windows
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_SHA: 95cca3f661f635b3cc85c04935fe8d96d8f432ef
+  RUST_VERSION: '1.75'
+  FLUTTER_VERSION: '3.24.5'
+  VCPKG_COMMIT_ID: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+  FLUTTER_ENGINE_SHA256: ec8cabf36ee4ff24c8d98de25b00e70781eb03876265aee84d0fe554a110036e
+
+jobs:
+  bridge:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: ${{ env.UPSTREAM_SHA }}
+          submodules: recursive
+      - name: Native bridge prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake gcc g++ git libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: keyplus-bridge
+      - uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
+        with:
+          flutter-version: '3.22.3'
+          channel: stable
+          cache: true
+      - name: Generate the pinned upstream CI bridge
+        run: |
+          cargo install cargo-expand --version 1.0.95 --locked
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
+          sed -i 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          cd flutter
+          flutter pub get
+          cd ..
+          flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyplus-native-bridge
+          if-no-files-found: error
+          path: |
+            src/bridge_generated.rs
+            src/bridge_generated.io.rs
+            flutter/lib/generated_bridge.dart
+            flutter/lib/generated_bridge.freezed.dart
+
+  windows:
+    needs: bridge
+    runs-on: windows-2022
+    timeout-minutes: 150
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;files,C:\keyplus-vcpkg-cache,readwrite'
+      VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: kit
+          sparse-checkout: keyplus-destek
+      - uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: ${{ env.UPSTREAM_SHA }}
+          submodules: recursive
+          path: upstream
+      - uses: actions/download-artifact@v4
+        with:
+          name: keyplus-native-bridge
+          path: upstream
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
+        with:
+          version: '15.0.6'
+      - uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          architecture: x64
+          cache: true
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: upstream
+          prefix-key: keyplus-windows
+      - uses: actions/cache@v4
+        with:
+          path: C:\keyplus-vcpkg-cache
+          key: keyplus-vcpkg-${{ env.VCPKG_COMMIT_ID }}-x64-v1
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+      - name: Native codec libraries
+        working-directory: upstream
+        shell: bash
+        run: |
+          mkdir -p /c/keyplus-vcpkg-cache
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+      - name: Pinned Flutter engine and upstream patch
+        working-directory: upstream
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          flutter precache --windows
+          $flutterRoot = Split-Path -Parent (Split-Path -Parent (Get-Command flutter).Source)
+          Invoke-WebRequest https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile engine.zip
+          $engineHash = (Get-FileHash -LiteralPath engine.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($engineHash -ne $env:FLUTTER_ENGINE_SHA256) { throw 'Pinned Flutter engine hash mismatch; extraction refused' }
+          Write-Output "Verified Flutter engine SHA-256: $engineHash"
+          Expand-Archive -LiteralPath engine.zip -DestinationPath engine
+          Get-ChildItem -LiteralPath engine | Copy-Item -Destination (Join-Path $flutterRoot 'bin\cache\artifacts\engine\windows-x64-release') -Recurse -Force
+          $flutterPatch = Join-Path (Get-Location) '.github\patches\flutter_3.24.4_dropdown_menu_enableFilter.diff'
+          git -C $flutterRoot apply --reverse --check $flutterPatch
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output 'Verified: the cached Flutter SDK already contains the upstream patch.'
+          } else {
+            git -C $flutterRoot apply --check $flutterPatch
+            if ($LASTEXITCODE -ne 0) { throw 'Flutter SDK is neither pristine nor correctly patched' }
+            git -C $flutterRoot apply $flutterPatch
+            if ($LASTEXITCODE -ne 0) { throw 'Upstream Flutter patch failed' }
+          }
+      - name: Keyplus source preparation and branding
+        shell: powershell
+        run: |
+          node kit/keyplus-destek/scripts/prepare.mjs --source upstream --runtime-config
+          if ($LASTEXITCODE -ne 0) { throw 'Keyplus source preparation failed' }
+          & kit/keyplus-destek/scripts/Make-Branding.ps1 -Source upstream
+      - name: Keyplus Flutter regression tests
+        working-directory: upstream/flutter
+        shell: powershell
+        run: |
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { throw 'Keyplus Flutter dependencies failed' }
+          foreach ($file in @('lib/desktop/pages/keyplus_home.dart','lib/desktop/pages/connection_page.dart','lib/desktop/pages/server_page.dart','lib/desktop/pages/desktop_setting_page.dart','lib/desktop/widgets/remote_toolbar.dart')) {
+            flutter analyze --no-fatal-infos --no-fatal-warnings $file
+            if ($LASTEXITCODE -ne 0) { throw "Keyplus Flutter analysis failed: $file" }
+          }
+          flutter test test/keyplus_ui_test.dart test/id_formatter_test.dart
+          if ($LASTEXITCODE -ne 0) { throw 'Keyplus Flutter tests failed' }
+      - name: Compile Windows application
+        working-directory: upstream
+        shell: powershell
+        run: |
+          python build.py --flutter --portable --skip-portable-pack --hwcodec --vram
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows build failed' }
+      - name: Native Keyplus configuration tests
+        working-directory: upstream
+        shell: powershell
+        run: |
+          cargo test --locked --release --lib --features flutter,hwcodec,vram keyplus
+          if ($LASTEXITCODE -ne 0) { throw 'Native Keyplus tests failed' }
+      - name: Source archive and build inventory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payload = Join-Path (Get-Location) 'upstream\flutter\build\windows\x64\runner\Release'
+          if (-not (Test-Path -LiteralPath (Join-Path $payload 'rustdesk.exe'))) { throw 'Application output missing' }
+          New-Item -ItemType Directory -Path artifacts | Out-Null
+          Get-ChildItem -LiteralPath $payload -File -Recurse | ForEach-Object {
+            $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+            [PSCustomObject]@{path=$_.FullName.Substring($payload.Length + 1); size=$_.Length; sha256=$hash.Hash.ToLowerInvariant()}
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath artifacts/payload-manifest.json -Encoding UTF8
+          $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $payload 'rustdesk.exe')
+          [PSCustomObject]@{source='${{ github.sha }}'; upstream='${{ env.UPSTREAM_SHA }}'; authenticode=$signature.Status.ToString(); connectionConfigured=$false} | ConvertTo-Json | Set-Content artifacts/build.json -Encoding UTF8
+          Compress-Archive -LiteralPath $payload -DestinationPath artifacts/KeyplusDestek-Windows-payload.zip
+          git -C upstream diff --binary > artifacts/keyplus-upstream.patch
+          Copy-Item -LiteralPath upstream/src/keyplus.rs -Destination artifacts/keyplus_runtime.rs
+          Copy-Item -LiteralPath kit/keyplus-destek -Destination upstream/keyplus-build-kit -Recurse
+          tar --exclude='./.git' --exclude='*/.git' --exclude='./target' --exclude='./flutter/build' --exclude='./flutter/.dart_tool' -czf artifacts/KeyplusDestek-source.tar.gz -C upstream .
+          if ($LASTEXITCODE -ne 0) { throw 'Complete source archive failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyplus-destek-windows-build
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 30

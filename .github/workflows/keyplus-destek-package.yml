@@ -1,0 +1,85 @@
+name: Keyplus Destek Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-run-id:
+        description: Successful Keyplus Destek Windows build run
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: keyplus-destek-package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: kit
+          sparse-checkout: |
+            keyplus-destek
+            .github/workflows
+      - uses: actions/download-artifact@v4
+        with:
+          name: keyplus-destek-windows-build
+          path: compiled
+          run-id: ${{ inputs.build-run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: '1.75'
+      - name: Verify original build and prepare payload
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.build-run-id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BUILD_RUN -notmatch '^\d+$') { throw 'Invalid build run' }
+          $run = gh api "repos/${{ github.repository }}/actions/runs/$env:BUILD_RUN" | ConvertFrom-Json
+          if ($run.conclusion -ne 'success' -or $run.path -ne '.github/workflows/keyplus-destek-windows.yml') { throw 'A successful native build is required' }
+          $build = Get-Content compiled/build.json -Raw | ConvertFrom-Json
+          if ($build.source -ne $run.head_sha -or $build.upstream -ne '95cca3f661f635b3cc85c04935fe8d96d8f432ef') { throw 'Source provenance mismatch' }
+          New-Item -ItemType Directory -Path upstream | Out-Null
+          tar -xzf compiled/KeyplusDestek-source.tar.gz -C upstream
+          if ($LASTEXITCODE -ne 0) { throw 'Source extraction failed' }
+          Expand-Archive compiled/KeyplusDestek-Windows-payload.zip payload
+          node kit/keyplus-destek/scripts/check-payload.mjs --payload payload/Release --manifest compiled/payload-manifest.json --config kit/keyplus-destek/config/release-pilot.json
+          if ($LASTEXITCODE -ne 0) { throw 'Payload verification failed' }
+      - name: Build standalone package and verify startup
+        shell: powershell
+        env:
+          BUILD_RUN: ${{ inputs.build-run-id }}
+          PACKAGE_SHA: ${{ github.sha }}
+        run: |
+          & kit/keyplus-destek/scripts/Package-Windows.ps1 -Source upstream -Payload payload/Release -BuildMetadata compiled/build.json -Config kit/keyplus-destek/config/release-pilot.json -Output artifacts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: keyplus-destek-validation-diagnostics
+          path: |
+            artifacts/windows-install-test.json
+            artifacts/windows-upgrade-test.json
+            artifacts/native-ui
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyplus-destek-release
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 30

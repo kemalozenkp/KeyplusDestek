@@ -1,0 +1,14 @@
+{
+  "name": "keyplus-destek",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "prepare:client": "node scripts/prepare.mjs",
+    "prepare:server": "node scripts/server.mjs"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "Keyplus Destek",
+  "stage": "installed-startup-published-pilot",
+  "keyplusRelease": "2026.11.21.1",
+  "platform": "windows-x64",
+  "independentFromErp": true,
+  "erpIntegration": false,
+  "upstream": {
+    "repository": "https://github.com/rustdesk/rustdesk.git",
+    "tag": "1.5.3",
+    "commit": "95cca3f661f635b3cc85c04935fe8d96d8f432ef",
+    "commonCommit": "fae47e024dd83cef6aaecde0aa7d11731df11649",
+    "license": "AGPL-3.0"
+  },
+  "server": {
+    "image": "rustdesk/rustdesk-server:1.1.16",
+    "ports": { "natTcp": 21115, "idTcpUdp": 21116, "relayTcp": 21117 }
+  },
+  "pilotPolicy": {
+    "defaultAccessMode": "quick-support",
+    "availableAccessModes": ["quick-support", "unattended"],
+    "customerApproval": "mode-dependent",
+    "unattendedAccess": true,
+    "unattendedRequiresDeviceSetup": true,
+    "permanentPasswordLocation": "device-native-security-settings",
+    "permanentSharedPassword": false,
+    "automaticInstallation": false,
+    "automaticDeployment": false
+  },
+  "pending": [
+    "uiux-real-windows-dpi-and-screenreader-check",
+    "uiux-native-wide-and-narrow-window-check",
+    "uiux-uac-pilot",
+    "authenticode-signing",
+    "two-windows-machines-uiux-session-test"
+  ]
+}

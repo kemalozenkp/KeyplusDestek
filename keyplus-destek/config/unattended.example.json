@@ -1,0 +1,6 @@
+{
+  "environment": "pilot",
+  "accessMode": "unattended",
+  "serverHost": "",
+  "publicKey": ""
+}
